@@ -2,6 +2,10 @@
 
 import math
 
+# for absolute or relative positioning
+ABSOLUTE=0
+RELATIVE=1
+
 class GcodeParser:
 	
 	def __init__(self):
@@ -59,7 +63,8 @@ class GcodeParser:
 	def parse_G0(self, args):
 		# G0: Rapid move
 		# same as a controlled move for us (& reprap FW)
-		self.G1(args, "G0")
+		#self.G1(args, "G0")  # fixed bug
+		self.model.do_G1(self.parseArgs(args), "G0")
 		
 	def parse_G1(self, args, type="G1"):
 		# G1: Controlled move
@@ -80,16 +85,59 @@ class GcodeParser:
 		
 	def parse_G90(self, args):
 		# G90: Set to Absolute Positioning
-		self.model.setRelative(False)
+		# Default, nothing to do
+		self.model.positioning=ABSOLUTE
+		#pass
 		
 	def parse_G91(self, args):
 		# G91: Set to Relative Positioning
-		self.model.setRelative(True)
+		# unsupported
+		print "Not yet supported: G91: Set to Relative Positioning"
+		#self.error("Not yet supported: G91: Set to Relative Positioning")
+		#self.model.positioning=RELATIVE
 		
 	def parse_G92(self, args):
 		# G92: Set Position
 		self.model.do_G92(self.parseArgs(args))
-		
+
+    # Add some Cura codes
+    	def parse_T0(self,args):
+		# Select extruder number (starts with 0)
+		pass
+	
+    	def parse_M82(self,args):
+		# use absolute temperature for extrusion
+		pass
+	
+	def parse_M84(self,args):
+		# disable motors
+		pass
+
+	def parse_M104(self,args):
+		# set temperature
+		pass
+
+	def parse_M106(self,args):
+		# set fant to <PWM value S 0-255  e.g. M106 S100
+		pass
+
+	def parse_M107(self,args):
+		# start with fan off
+		pass
+
+	def parse_M140(self,args):
+		# set heater bed temperature
+		pass
+    # End Cura codes
+
+	def parse_M109(self,args):
+		# wait for temperature to be reached
+		pass
+
+	def parse_M190(self,args):
+		# set temperature
+		pass		
+
 	def warn(self, msg):
 		print "[WARN] Line %d: %s (Text:'%s')" % (self.lineNb, msg, self.line)
 		
@@ -97,39 +145,6 @@ class GcodeParser:
 		print "[ERROR] Line %d: %s (Text:'%s')" % (self.lineNb, msg, self.line)
 		raise Exception("[ERROR] Line %d: %s (Text:'%s')" % (self.lineNb, msg, self.line))
 
-class BBox(object):
-	
-	def __init__(self, coords):
-		self.xmin = self.xmax = coords["X"]
-		self.ymin = self.ymax = coords["Y"]
-		self.zmin = self.zmax = coords["Z"]
-		
-	def dx(self):
-		return self.xmax - self.xmin
-	
-	def dy(self):
-		return self.ymax - self.ymin
-	
-	def dz(self):
-		return self.zmax - self.zmin
-		
-	def cx(self):
-		return (self.xmax + self.xmin)/2
-	
-	def cy(self):
-		return (self.ymax + self.ymin)/2
-	
-	def cz(self):
-		return (self.zmax + self.zmin)/2
-	
-	def extend(self, coords):
-		self.xmin = min(self.xmin, coords["X"])
-		self.xmax = max(self.xmax, coords["X"])
-		self.ymin = min(self.ymin, coords["Y"])
-		self.ymax = max(self.ymax, coords["Y"])
-		self.zmin = min(self.zmin, coords["Z"])
-		self.zmax = max(self.zmax, coords["Z"])
-		
 class GcodeModel:
 	
 	def __init__(self, parser):
@@ -148,14 +163,13 @@ class GcodeModel:
 			"Y":0.0,
 			"Z":0.0,
 			"E":0.0}
-		# if true, args for move (G1) are given relatively (default: absolute)
-		self.isRelative = False
 		# the segments
 		self.segments = []
 		self.layers = None
 		self.distance = None
 		self.extrudate = None
-		self.bbox = None
+		self.extents = None
+		self.positioning = ABSOLUTE
 	
 	def do_G1(self, args, type):
 		# G0/G1: Rapid/Controlled move
@@ -164,24 +178,35 @@ class GcodeModel:
 		# update changed coords
 		for axis in args.keys():
 			if coords.has_key(axis):
-				if self.isRelative:
-					coords[axis] += args[axis]
-				else:
-					coords[axis] = args[axis]
+				coords[axis] = args[axis]
 			else:
 				self.warn("Unknown axis '%s'"%axis)
 		# build segment
-		absolute = {
+		if self.positioning == ABSOLUTE:
+		    absolute = {
 			"X": self.offset["X"] + coords["X"],
 			"Y": self.offset["Y"] + coords["Y"],
 			"Z": self.offset["Z"] + coords["Z"],
 			"F": coords["F"],	# no feedrate offset
 			"E": self.offset["E"] + coords["E"]
-		}
-		seg = Segment(
+		    }
+		    seg = Segment(
 			type,
 			absolute,
 			self.parser.lineNb,
+			self.parser.line)
+		else :
+		    relative = {
+			"X":coords["X"],
+			"Y":coords["Y"],
+			"Z":coords["Z"],
+			"F":coords["F"],
+			"E":coords["E"]
+		    }
+		    seg = Segment_Relative(
+		        type,
+                        relative,
+                        self.parser.lineNb,
 			self.parser.line)
 		self.addSegment(seg)
 		# update model coords
@@ -189,7 +214,8 @@ class GcodeModel:
 		
 	def do_G28(self, args):
 		# G28: Move to Origin
-		self.warn("G28 unimplemented")
+		for i in args:
+	        	self.relative[i] = args[i]
 		
 	def do_G92(self, args):
 		# G92: Set Position
@@ -206,9 +232,6 @@ class GcodeModel:
 				self.relative[axis] = args[axis]
 			else:
 				self.warn("Unknown axis '%s'"%axis)
-
-	def setRelative(self, isRelative):
-		self.isRelative = isRelative
 		
 	def addSegment(self, segment):
 		self.segments.append(segment)
@@ -253,21 +276,22 @@ class GcodeModel:
 				(seg.coords["E"] > coords["E"]) ):
 				style = "extrude"
 			
-			# positive extruder movement in a different Z signals a layer change for this segment
-			if (
-				(seg.coords["E"] > coords["E"]) and
-				(seg.coords["Z"] != currentLayerZ) ):
-				currentLayerZ = seg.coords["Z"]
-				currentLayerIdx += 1
 			
 			# set style and layer in segment
 			seg.style = style
 			seg.layerIdx = currentLayerIdx
 			
 			
+			# moving down to a different Z signals a layer change for the next segment
+			if (
+				(seg.coords["Z"] < coords["Z"]) and
+				(seg.coords["Z"] != currentLayerZ) ):
+				currentLayerZ = seg.coords["Z"]
+				currentLayerIdx += 1
+			
 			#print coords
 			#print seg.coords
-			#print "%s (%s  | %s)"%(style, str(seg.coords), seg.line)
+	#		print "%s (%s  | %s)"%(style, str(seg.coords), seg.line)
 			#print
 			
 			# execute segment
@@ -311,16 +335,25 @@ class GcodeModel:
 		self.distance = 0
 		self.extrudate = 0
 		
-		# init model bbox
-		self.bbox = None
+		# init model extents
+		self.extents = []
 		
 		# extender helper
-		def extend(bbox, coords):
-			if bbox is None:
-				return BBox(coords)
+		def extend(extents, coords):
+			if not len(extents):
+				extents.append(coords["X"])
+				extents.append(coords["X"])
+				extents.append(coords["Y"])
+				extents.append(coords["Y"])
+				extents.append(coords["Z"])
+				extents.append(coords["Z"])
 			else:
-				bbox.extend(coords)
-				return bbox
+				extents[0] = min(self.extents[0], coords["X"])
+				extents[1] = max(self.extents[1], coords["X"])
+				extents[2] = min(self.extents[2], coords["Y"])
+				extents[3] = max(self.extents[3], coords["Y"])
+				extents[4] = min(self.extents[4], coords["Z"])
+				extents[5] = max(self.extents[5], coords["Z"])
 		
 		# for all layers
 		for layer in self.layers:
@@ -332,7 +365,7 @@ class GcodeModel:
 			layer.extrudate = 0
 			
 			# include start point
-			self.bbox = extend(self.bbox, coords)
+			extend(self.extents, coords)
 			
 			# for all segments
 			for seg in layer.segments:
@@ -353,7 +386,7 @@ class GcodeModel:
 				coords = seg.coords
 				
 				# include end point
-				extend(self.bbox, coords)
+				extend(self.extents, coords)
 			
 			# accumulate total metrics
 			self.distance += layer.distance
@@ -365,7 +398,7 @@ class GcodeModel:
 		self.calcMetrics()
 
 	def __str__(self):
-		return "<GcodeModel: len(segments)=%d, len(layers)=%d, distance=%f, extrudate=%f, bbox=%s>"%(len(self.segments), len(self.layers), self.distance, self.extrudate, self.bbox)
+		return "<GcodeModel: len(segments)=%d, len(layers)=%d, distance=%f, extrudate=%f, extents=%s>"%(len(self.segments), len(self.layers), self.distance, self.extrudate, self.extents)
 	
 class Segment:
 	def __init__(self, type, coords, lineNb, line):
